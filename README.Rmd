@@ -23,7 +23,7 @@ knitr::kable(repo_info, format = "markdown")
 
 Installing dependencies in R:
 
-``` r
+```R
 install.packages(c(
   "rmarkdown", "tidyverse", "remotes",
   "ggdist", "gt", "patchwork"
@@ -35,5 +35,5 @@ Knitting the R Markdown source document to an HTML page, which requires a local 
 
 ``` bash
 # wget https://unpkg.com/context-cards/dist/context-cards.js
-R -e "rmarkdown::render('index.Rmd')"
+$ R -e "rmarkdown::render('index.Rmd')"
 ```

@@ -25,4 +25,4 @@ a local copy of [Wikipedia Context
 Cards](https://github.com/joakin/context-cards):
 
     # wget https://unpkg.com/context-cards/dist/context-cards.js
-    R -e "rmarkdown::render('index.Rmd')"
+    $ R -e "rmarkdown::render('index.Rmd')"
