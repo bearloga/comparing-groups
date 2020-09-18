@@ -26,6 +26,7 @@ nocite: |
 library(knitr)
 opts_chunk$set(echo = FALSE, digits = 3, message = FALSE, warning = FALSE)
 options(digits = 4)
+plan(multiprocess(workers = getOption("mc.cores", 2)))
 ```
 
 ```{css}
@@ -49,6 +50,7 @@ a.wiki-preview {
 suppressPackageStartupMessages({
   library("glue")
   library("purrr")
+  library("furrr")
   library("tidyr")
   library("dplyr")
   library("ggplot2")
@@ -275,8 +277,36 @@ analyze_data(example_data)
 
 Now we want to simulate and analyze thousands of times and also across different sample sizes, to study the impact of sample sizes on robustness of those tests:
 
-```{r analysis-results, cache=TRUE, dependson=c("simulation-parameters"), echo=TRUE}
-set.seed(42)
+```{r analysis-results, dependson=c("simulation-parameters"), echo=FALSE}
+if (fs::file_exists("analysis_results.rds")) {
+  analysis_results <- readr::read_rds("analysis_results.rds")
+} else {
+  # Number of replications to perform:
+  n_replications <- 100000
+  # Sample sizes to explore at each replication:
+  sample_sizes <- c(25, 100, 250)
+  analysis_results <- seq(1, n_replications) %>%
+    future_map_dfr(
+      function(replication) {
+        # At each rep, simulate & analyze data w/ various sample sizes:
+        analysis_result <- sample_sizes %>%
+          set_names() %>%
+          map(simulate_data, sim_params = simulation_parameters) %>%
+          map_dfr(analyze_data, .id = "sample_size")
+        return(analysis_result)
+      },
+      .id = "replication",
+      .progress = FALSE,
+      .options = future_options(
+        packages = c("tidyr", "dplyr", "broom"),
+        seed = 42L
+      )
+    )
+  readr::write_rds(analysis_results, "analysis_results.rds", compress = "gz")
+}
+```
+``` r
+set.seed(42L)
 # Number of replications to perform:
 n_replications <- 100000
 # Sample sizes to explore at each replication:
