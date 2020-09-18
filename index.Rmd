@@ -1,0 +1,370 @@
+---
+title: "Simulation study of statistical methods for comparing groups"
+description: |
+  Examples and informal evaluations of various statistical significance tests
+  for comparing observations generated from different distributions and families
+author:
+  - name: Mikhail Popov
+    url: https://mpopov.com/
+    affiliation: Wikimedia Foundation
+    affiliation_url: https://wikimediafoundation.org/
+date: 2020-09-18
+bibliography: bibliography.bib
+repository_url: https://github.com/bearloga/comparing-groups
+citation_url: https://bearloga.github.io/comparing-groups
+slug: popov2020comparing
+creative_commons: CC BY-SA
+output:
+  distill::distill_article:
+    toc: true
+    toc_depth: 2
+    df_print: kable
+nocite: | 
+  @dalgaard2008introductory, @Rpkg-stats
+---
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(echo = FALSE, digits = 3, message = FALSE, warning = FALSE)
+options(digits = 4)
+```
+
+```{css}
+a.wiki-preview {
+    color: #0645ad;
+    text-decoration: none;
+    border-bottom: 1px dotted #0645ad;
+}
+.wiki-preview::after {
+    font-family: serif;
+    content: " W";
+    vertical-align: super;
+    font-size: 6pt;
+}
+```
+
+<!-- https://chimeces.com/context-cards/ -->
+<script src="context-cards.js"></script>
+
+```{r packages}
+suppressPackageStartupMessages({
+  library("glue")
+  library("purrr")
+  library("tidyr")
+  library("dplyr")
+  library("ggplot2")
+  library("distributional")
+  library("ggdist")
+  library("patchwork")
+  library("gt")
+})
+
+theme_set(theme_ggdist())
+```
+
+**NOTE**: Only some of the code has been included on this page. The code responsible for creating tables and charts can be found in [the R Markdown source document](https://github.com/bearloga/comparing-groups/blob/main/index.Rmd).
+
+# Introduction
+
+[@pananos2020nothing]
+
+<a href="https://en.wikipedia.org/wiki/Student's_t-test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Student's t-test">t-test</a>
+
+<a href="https://en.wikipedia.org/wiki/Mann%E2%80%93Whitney_U_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Mann–Whitney U test">Wilcoxon-Mann-Whitney test</a>
+
+<a href="https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Kolmogorov–Smirnov test">Kolmogorov-Smirnov test</a>
+
+```{r}
+tibble(
+  scenario = c("a", "b", "c", "d"),
+  distribution = map_chr(
+    c("Normal", "Poisson", "Gamma", "Beta"),
+    function(distribution) {
+      return(glue("<a href=\"https://en.wikipedia.org/wiki/{distribution}_distribution\" class='wiki-preview' data-wiki-lang='en' data-wiki-title='{distribution} distribution'>{distribution}</a>"))
+    }
+  )
+) %>%
+  gt() %>%
+  fmt(columns = vars("distribution"), fns = function(x) {
+    map_chr(x, html)
+  }) %>%
+  cols_align("center") %>%
+  cols_label(scenario = "Scenario", distribution = "Distribution")
+```
+
+## Data simulation
+
+```{r plot-distributions}
+plot_distributions <- function(sim_params) {
+  group_order <- c("control", "none", "small", "medium", "large")
+  # Normal:
+  p1 <- sim_params$a %>%
+    map_dfr(as_tibble, .id = "group") %>%
+    mutate(group = factor(group, group_order)) %>%
+    ggplot(aes(dist = dist_normal(mu = mu, sigma = sigma), y = group)) +
+    stat_dist_interval() +
+    ggtitle("a (Normal)")
+  # Poisson:
+  p2 <- sim_params$b %>%
+    map_dfr(as_tibble, .id = "group") %>%
+    mutate(group = factor(group, group_order)) %>%
+    ggplot(aes(dist = dist_poisson(lambda = lambda), y = group)) +
+    stat_dist_interval() +
+    ggtitle("b (Poisson)")
+  # Gamma:
+  p3 <- sim_params$c %>%
+    map_dfr(as_tibble, .id = "group") %>%
+    mutate(group = factor(group, group_order)) %>%
+    ggplot(aes(dist = dist_gamma(shape = alpha, rate = beta), y = group)) +
+    stat_dist_interval() +
+    ggtitle("c (Gamma)")
+  # Beta:
+  p4 <- sim_params$d %>%
+    map_dfr(as_tibble, .id = "group") %>%
+    mutate(group = factor(group, group_order)) %>%
+    ggplot(aes(dist = dist_beta(shape1 = alpha, shape2 = beta), y = group)) +
+    scale_x_continuous(limits = c(0, 1)) +
+    stat_dist_interval() +
+    ggtitle("d (Beta)")
+  return(wrap_plots(p1, p2, p3, p4, nrow = 2, ncol = 2))
+}
+```
+
+The idea here is to specify different centers and shapes of the various distributions for every group, except the "none" group which we include for measuring <a href="https://en.wikipedia.org/wiki/Type_I_and_type_II_errors" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Type I and type II errors">type I</a> error (aka false positive rate (FPR), aka false rejection rate (FRR), aka $\alpha$): the probability of incorrectly rejecting the null hypothesis when the null hypothesis is true. The null hypothesis will be true for the "none" group because it has the exact same distribution as the "control" group.
+
+```{r simulation-parameters, cache=TRUE, echo=TRUE}
+simulation_parameters <- list(
+  # Normal:
+  a = list(
+    control = list(mu = 20, sigma = 2),
+    none = list(mu = 20, sigma = 2),
+    small = list(mu = 22, sigma = 2),
+    medium = list(mu = 26, sigma = 2),
+    large = list(mu = 28, sigma = 2)
+  ),
+  # Poisson:
+  b = list(
+    control = list(lambda = 30),
+    none = list(lambda = 30),
+    small = list(lambda = 35),
+    medium = list(lambda = 40),
+    large = list(lambda = 45)
+  ),
+  # Gamma:
+  c = list(
+    control = list(alpha = 1, beta = 1 / 100),
+    none = list(alpha = 1, beta = 1 / 100),
+    small = list(alpha = 3, beta = 1 / 50),
+    medium = list(alpha = 6, beta = 1 / 50),
+    large = list(alpha = 9, beta = 1 / 50)
+  ),
+  # Beta:
+  d = list(
+    control = list(alpha = 10, beta = 20),
+    none = list(alpha = 10, beta = 20),
+    small = list(alpha = 15, beta = 20),
+    medium = list(alpha = 20, beta = 20),
+    large = list(alpha = 25, beta = 20)
+  )
+)
+```
+
+Let's visualize what the different groups' distributions look like (using the [interval plot](https://mjskay.github.io/ggdist/reference/stat_dist_slabinterval.html)) with those parameters:
+
+<aside>
+These plots were created with [`{ggplot2}`](https://ggplot2.tidyverse.org/), [`{ggdist}`](https://mjskay.github.io/ggdist/), [`{distributional}`](https://pkg.mitchelloharawild.com/distributional/), and [`{patchwork}`](https://patchwork.data-imaginist.com/) packages.
+</aside>
+
+```{r, layout="l-body-outset", fig.width=7, fig.height=5, dependson=c("simulation-parameters")}
+plot_distributions(simulation_parameters)
+```
+
+Next, we define a `simulate_data()` function for simulating data given the various parameters.
+
+```{r simulate-data, echo=TRUE}
+simulate_data <- function(N, sim_params) {
+  # Each scenario will be a named list with "control", "none", etc.
+  simulations <- list(
+    a = map(sim_params$a, ~ rnorm(N, .x$mu, .x$sigma)),
+    b = map(sim_params$b, ~ rpois(N, .x$lambda)),
+    c = map(sim_params$c, ~ rgamma(N, shape = .x$alpha, rate = .x$beta)),
+    d = map(sim_params$d, ~ rbeta(N, shape1 = .x$alpha, shape2 = .x$beta))
+  )
+  # This will create a tibble with columns "scenario", "group", "y":
+  tidy_simulations <- simulations %>%
+    # Turn each scenario into a (wide) tibble with each group as a column:
+    map(as_tibble) %>%
+    # Then we want to reshape it into a long tibble:
+    map_dfr(
+      pivot_longer,
+      cols = all_of(c("control", "none", "small", "medium", "large")),
+      names_to = "group",
+      values_to = "y",
+      .id = "scenario"
+    )
+  return(tidy_simulations)
+}
+```
+
+```{r example-data, cache=TRUE, echo=TRUE, dependson=c("simulation-parameters")}
+set.seed(20200918)
+n_example_size <- 2000
+example_data <- simulate_data(N = n_example_size, sim_params = simulation_parameters)
+```
+
+Here are the distributions of the data in the different scenarios from this one single simulated dataset of `r n_example_size` randomly generated observations:
+
+```{r, layout="l-body-outset", fig.width=7, fig.height=5}
+example_data %>%
+  mutate(group = factor(group, c("control", "none", "small", "medium", "large"))) %>%
+  split(., .$scenario) %>%
+  imap(function(sim_data, scenario) {
+    ggplot(sim_data, aes(x = y, y = group)) +
+      stat_halfeye() +
+      ggtitle(scenario)
+  }) %>%
+  wrap_plots(nrow = 2, ncol = 2)
+```
+
+## Data analysis
+
+Given a single (simulated) dataset, we need to perform each of the three statistical tests on each pair of groups, always comparing to the control group. This work is captured by the `analyze_data()` function:
+
+<aside>
+The results of the tests are then tidied-up via the [`{broom}`](https://broom.tidymodels.org/) package.
+</aside>
+
+```{r analyze-data, echo=TRUE}
+analyze_data <- function(simulated_data) {
+  comparison_groups <- c("none", "small", "medium", "large")
+  names(comparison_groups) <- paste("control vs", comparison_groups)
+  
+  comparisons <- map_dfr(
+    set_names(unique(simulated_data$scenario)),
+    function(scenario) {
+      map_dfr(
+        comparison_groups, function(comparison_group) {
+          sim_data <- simulated_data %>%
+            filter(scenario == scenario, group %in% c("control", comparison_group)) %>%
+            mutate(group = factor(group))
+          tests <- list(
+            t_test = t.test(y ~ group, data = sim_data),
+            wilcox_test = wilcox.test(y ~ group, data = sim_data),
+            ks_test = ks.test(
+              x = sim_data$y[sim_data$group == "control"],
+              y = sim_data$y[sim_data$group != "control"]
+            )
+          )
+          results <- map_dfr(tests, broom::tidy, .id = "statistical_test")
+          return(select(results, statistical_test, statistic, p.value, method))
+        },
+        .id = "comparison"
+      )
+    },
+    .id = "scenario"
+  )
+  
+  return(comparisons)
+}
+```
+
+```{r analysis-test, eval=FALSE}
+analyze_data(example_data)
+```
+
+## Putting it all together
+
+Now we want to simulate and analyze thousands of times and also across different sample sizes, to study the impact of sample sizes on robustness of those tests:
+
+```{r analysis-results, cache=TRUE, dependson=c("simulation-parameters"), echo=TRUE}
+set.seed(42)
+# Number of replications to perform:
+n_replications <- 100000
+# Sample sizes to explore at each replication:
+sample_sizes <- c(25, 100, 250)
+analysis_results <- seq(1, n_replications) %>%
+  map_dfr(
+    function(replication) {
+      # At each rep, simulate & analyze data w/ various sample sizes:
+      analysis_result <- sample_sizes %>%
+        set_names() %>%
+        map(simulate_data, sim_params = simulation_parameters) %>%
+        map_dfr(analyze_data, .id = "sample_size")
+      return(analysis_result)
+    },
+    .id = "replication"
+  )
+```
+```{r analysis-results-f, cache=TRUE, dependson=c("analysis-results")}
+analysis_results_f <- analysis_results %>%
+  mutate(
+    sample_size = as.integer(sample_size),
+    scenario = factor(
+      scenario,
+      c("a", "b", "c", "d"),
+      c("a (Normal)", "b (Poisson)", "c (Gamma)", "d (Beta)")
+    ),
+    statistical_test_f = factor(
+      statistical_test,
+      c("t_test", "wilcox_test", "ks_test"),
+      c("Student's t-test", "Wilcoxon-Mann-Whitney test", "Kolmogorov-Smirnov Test")
+    )
+  )
+```
+
+For each combination of scenario and sample size, we calculate the proportion of replications where the null hypothesis would be rejected (based on the p-value and significance level $\alpha = 0.05$). As a reminder, in case of the "control vs none" comparison, the null hypothesis (that the means/distributions are the same between the two groups) *is* true, so we would expect the proportion to equal $\alpha$ -- the probability of a false rejection.
+
+<aside>
+The following table summarizing those results is created with the [`{gt}`](https://gt.rstudio.com/) package.
+</aside>
+
+```{r, layout="l-body-outset"}
+analysis_results_f %>%
+  group_by(scenario, statistical_test_f, sample_size, comparison) %>%
+  summarize(reject = mean(p.value <= 0.05), .groups = "drop") %>%
+  pivot_wider(names_from = "comparison", values_from = "reject") %>%
+  mutate(sample_size = paste0("N = ", sample_size)) %>%
+  group_by(scenario, sample_size) %>%
+  gt(row_group.sep = ", ") %>%
+  tab_header(
+    title = "Two-sided null hypothesis rejection rate",
+    subtitle = html("At &alpha;=0.05 significance level")
+  ) %>%
+  fmt_percent(columns = starts_with("control vs"), decimals = 1) %>%
+  cols_move(
+    columns = vars("control vs none", "control vs small", "control vs medium", "control vs large"),
+    after = vars("statistical_test_f")
+  ) %>%
+  cols_label(statistical_test_f = "Statistical test by scenario") %>%
+  cols_align(align = "left", columns = vars("statistical_test_f")) %>%
+  tab_style(
+    style = list(cell_text(weight = "bold")),
+    locations = cells_row_groups()
+  ) %>%
+  tab_style(
+    style = list(cell_text(indent = px(20))),
+    locations = cells_body(columns = vars("statistical_test_f"))
+  )
+```
+
+```{r, layout="l-body-outset", fig.width=9, fig.height=9}
+analysis_results_f %>%
+  mutate(
+    sample_size = factor(sample_size, sample_sizes, paste("N =", sample_sizes)),
+    comparison = factor(comparison, paste("control vs", c("none", "small", "medium", "large")))
+  ) %>%
+  split(., .$statistical_test_f) %>%
+  imap(function(analysis_result, test) {
+    ggplot(analysis_result, aes(x = statistic, y = comparison, fill = sample_size)) +
+      stat_halfeye() +
+      facet_wrap( ~ scenario, nrow = 1) +
+      labs(title = test, y = NULL, x = "Test statistic", fill = "Sample size") +
+      guides(fill = guide_legend(nrow = 1)) +
+      theme(legend.position = "bottom")
+  }) %>%
+  wrap_plots(ncol = 1) +
+  plot_annotation(title = "Distributions of test statistics")
+```
+
+# Acknowledgements {.appendix}
+
+You might have noticed a few blue links with "W"s on this page. Those are links to the Wikipedia articles on those topics and if you hover over them, you will see a preview of the article. This is possible with the [ContextCards library](https://chimeces.com/context-cards/), based on the [Popups extension for MediaWiki](https://www.mediawiki.org/wiki/Extension:Popups).
