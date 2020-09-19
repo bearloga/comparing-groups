@@ -20,12 +20,14 @@ output:
     toc_depth: 2
     df_print: kable
 nocite: | 
-  @dalgaard2008introductory, @Rpkg-stats
+  @dalgaard2008introductory, @degroot2012probability, @casella2002statistical,
+  @Rpkg-stats
 ---
 ```{r setup, include=FALSE}
 library(knitr)
 opts_chunk$set(echo = FALSE, digits = 3, message = FALSE, warning = FALSE)
 options(digits = 4)
+library(future)
 plan(multiprocess(workers = getOption("mc.cores", 2)))
 ```
 
@@ -63,13 +65,21 @@ suppressPackageStartupMessages({
 theme_set(theme_ggdist())
 ```
 
-**NOTE**: Only some of the code has been included on this page. The code responsible for creating tables and charts can be found in [the R Markdown source document](https://github.com/bearloga/comparing-groups/blob/main/index.Rmd).
+**NOTE**: Only some of the code has been included on this page. The full code (including chunks responsible for creating tables and charts) can be found in [the R Markdown source document](https://github.com/bearloga/comparing-groups/blob/main/index.Rmd).
 
 # Introduction
 
-[@pananos2020nothing]
+The two most difficult problems in statistics are:
 
-<a href="https://en.wikipedia.org/wiki/Student's_t-test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Student's t-test">t-test</a>
+- $p \gg N$ (when the number of dimensions greatly exceeds the sample size)
+- the question "Can I use a <a href="https://en.wikipedia.org/wiki/Student's_t-test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Student's t-test">t-test</a> here?"
+
+This article is not about high dimensionality. It is about an issue that is, perhaps, more divisive in the statistical world than "frequentist statistics vs Bayesian statistics" -- when a t-test is or is not appropriate to use. Specifically, there are two schools of thought:
+
+- there are those who assert that the data needs to be normally-distributed and a non-parametric test should be employed otherwise
+- there are those who assert that the distributional assumptions of a t-test apply to the test statistic only; so the test can be employed even with skewed data
+
+[@pananos2020nothing]
 
 <a href="https://en.wikipedia.org/wiki/Mann%E2%80%93Whitney_U_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Mann–Whitney U test">Wilcoxon-Mann-Whitney test</a>
 
@@ -93,11 +103,13 @@ tibble(
   cols_label(scenario = "Scenario", distribution = "Distribution")
 ```
 
+# Methods
+
 ## Data simulation
 
 ```{r plot-distributions}
+group_order <- c("control", "none", "small", "medium", "large")
 plot_distributions <- function(sim_params) {
-  group_order <- c("control", "none", "small", "medium", "large")
   # Normal:
   p1 <- sim_params$a %>%
     map_dfr(as_tibble, .id = "group") %>%
@@ -116,14 +128,14 @@ plot_distributions <- function(sim_params) {
   p3 <- sim_params$c %>%
     map_dfr(as_tibble, .id = "group") %>%
     mutate(group = factor(group, group_order)) %>%
-    ggplot(aes(dist = dist_gamma(shape = alpha, rate = beta), y = group)) +
+    ggplot(aes(dist = dist_gamma(shape = shape, rate = rate), y = group)) +
     stat_dist_interval() +
     ggtitle("c (Gamma)")
   # Beta:
   p4 <- sim_params$d %>%
     map_dfr(as_tibble, .id = "group") %>%
     mutate(group = factor(group, group_order)) %>%
-    ggplot(aes(dist = dist_beta(shape1 = alpha, shape2 = beta), y = group)) +
+    ggplot(aes(dist = dist_beta(shape1 = shape1, shape2 = shape2), y = group)) +
     scale_x_continuous(limits = c(0, 1)) +
     stat_dist_interval() +
     ggtitle("d (Beta)")
@@ -131,7 +143,24 @@ plot_distributions <- function(sim_params) {
 }
 ```
 
-The idea here is to specify different centers and shapes of the various distributions for every group, except the "none" group which we include for measuring <a href="https://en.wikipedia.org/wiki/Type_I_and_type_II_errors" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Type I and type II errors">type I</a> error (aka false positive rate (FPR), aka false rejection rate (FRR), aka $\alpha$): the probability of incorrectly rejecting the null hypothesis when the null hypothesis is true. The null hypothesis will be true for the "none" group because it has the exact same distribution as the "control" group.
+The idea here is to specify different centers and shapes of the various distributions for every group, except the "none" group which we include for measuring <a href="https://en.wikipedia.org/wiki/Type_I_and_type_II_errors" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Type I and type II errors">type I</a> error (aka false positive rate (FPR), aka false rejection rate (FRR), aka $\alpha$): the probability of incorrectly rejecting the null hypothesis when the null hypothesis is true. The null hypothesis will be true for the "none" group because it has the exact same distribution as the "control" group. For example:
+
+```{r, layout="l-body-outset", fig.width=6, fig.height=3}
+tribble(~shape, ~rate, 2, 0.01) %>%
+  ggplot(aes(dist = dist_gamma(shape = shape, rate = rate))) +
+  stat_dist_halfeye(orientation = "horizontal") +
+  ggtitle("Probability density of Gamma(2, 0.01)")
+```
+```{r z, echo=TRUE}
+# https://twitter.com/PhDemetri/status/1305984009609060353
+set.seed(50201)
+z <- replicate(100000, {
+  x <- rgamma(50, 2, 0.01)
+  y <- rgamma(50, 2, 0.01)
+  t.test(x,y)$p.value <= 0.05
+})
+mean(z)
+```
 
 ```{r simulation-parameters, cache=TRUE, echo=TRUE}
 simulation_parameters <- list(
@@ -145,27 +174,27 @@ simulation_parameters <- list(
   ),
   # Poisson:
   b = list(
-    control = list(lambda = 30),
-    none = list(lambda = 30),
-    small = list(lambda = 35),
-    medium = list(lambda = 40),
-    large = list(lambda = 45)
+    control = list(lambda = 2),
+    none = list(lambda = 2),
+    small = list(lambda = 4),
+    medium = list(lambda = 6),
+    large = list(lambda = 8)
   ),
   # Gamma:
   c = list(
-    control = list(alpha = 1, beta = 1 / 100),
-    none = list(alpha = 1, beta = 1 / 100),
-    small = list(alpha = 3, beta = 1 / 50),
-    medium = list(alpha = 6, beta = 1 / 50),
-    large = list(alpha = 9, beta = 1 / 50)
+    control = list(shape = 2, rate = 1 / 100),
+    none = list(shape = 2, rate = 1 / 100),
+    small = list(shape = 4, rate = 1 / 100),
+    medium = list(shape = 6, rate = 1 / 100),
+    large = list(shape = 8, rate = 1 / 100)
   ),
   # Beta:
   d = list(
-    control = list(alpha = 10, beta = 20),
-    none = list(alpha = 10, beta = 20),
-    small = list(alpha = 15, beta = 20),
-    medium = list(alpha = 20, beta = 20),
-    large = list(alpha = 25, beta = 20)
+    control = list(shape1 = 10, shape2 = 20),
+    none = list(shape1 = 10, shape2 = 20),
+    small = list(shape1 = 15, shape2 = 20),
+    medium = list(shape1 = 20, shape2 = 20),
+    large = list(shape1 = 25, shape2 = 20)
   )
 )
 ```
@@ -184,12 +213,13 @@ Next, we define a `simulate_data()` function for simulating data given the vario
 
 ```{r simulate-data, echo=TRUE}
 simulate_data <- function(N, sim_params) {
-  # Each scenario will be a named list with "control", "none", etc.
+  # sim_params is a list of scenarios; each scenario will be a named list with
+  # "control", "none", etc.
   simulations <- list(
-    a = map(sim_params$a, ~ rnorm(N, .x$mu, .x$sigma)),
-    b = map(sim_params$b, ~ rpois(N, .x$lambda)),
-    c = map(sim_params$c, ~ rgamma(N, shape = .x$alpha, rate = .x$beta)),
-    d = map(sim_params$d, ~ rbeta(N, shape1 = .x$alpha, shape2 = .x$beta))
+    a = map(sim_params[["a"]], ~ rnorm(N, mean = .x$mu, sd = .x$sigma)),
+    b = map(sim_params[["b"]], ~ rpois(N, lambda = .x$lambda)),
+    c = map(sim_params[["c"]], ~ rgamma(N, shape = .x$shape, rate = .x$rate)),
+    d = map(sim_params[["d"]], ~ rbeta(N, shape1 = .x$shape1, shape2 = .x$shape2))
   )
   # This will create a tibble with columns "scenario", "group", "y":
   tidy_simulations <- simulations %>%
@@ -198,7 +228,8 @@ simulate_data <- function(N, sim_params) {
     # Then we want to reshape it into a long tibble:
     map_dfr(
       pivot_longer,
-      cols = all_of(c("control", "none", "small", "medium", "large")),
+      cols = all_of(names(sim_params[[1]])),
+      # ^ in case only "control" & "none" are provided
       names_to = "group",
       values_to = "y",
       .id = "scenario"
@@ -217,11 +248,11 @@ Here are the distributions of the data in the different scenarios from this one 
 
 ```{r, layout="l-body-outset", fig.width=7, fig.height=5}
 example_data %>%
-  mutate(group = factor(group, c("control", "none", "small", "medium", "large"))) %>%
+  mutate(group = factor(group, group_order)) %>%
   split(., .$scenario) %>%
   imap(function(sim_data, scenario) {
     ggplot(sim_data, aes(x = y, y = group)) +
-      stat_halfeye() +
+      stat_halfeye(adjust = 2) +
       ggtitle(scenario)
   }) %>%
   wrap_plots(nrow = 2, ncol = 2)
@@ -239,14 +270,15 @@ The results of the tests are then tidied-up via the [`{broom}`](https://broom.ti
 analyze_data <- function(simulated_data) {
   comparison_groups <- c("none", "small", "medium", "large")
   names(comparison_groups) <- paste("control vs", comparison_groups)
+  scenarios <- set_names(c("a", "b", "c", "d"))
   
   comparisons <- map_dfr(
-    set_names(unique(simulated_data$scenario)),
+    scenarios,
     function(scenario) {
       map_dfr(
         comparison_groups, function(comparison_group) {
-          sim_data <- simulated_data %>%
-            filter(scenario == scenario, group %in% c("control", comparison_group)) %>%
+          sim_data <- simulated_data[simulated_data[["scenario"]] == scenario, ] %>%
+            filter(group %in% c("control", comparison_group)) %>%
             mutate(group = factor(group))
           tests <- list(
             t_test = t.test(y ~ group, data = sim_data),
@@ -269,22 +301,20 @@ analyze_data <- function(simulated_data) {
 }
 ```
 
-```{r analysis-test, eval=FALSE}
-analyze_data(example_data)
-```
-
 ## Putting it all together
 
 Now we want to simulate and analyze thousands of times and also across different sample sizes, to study the impact of sample sizes on robustness of those tests:
 
-```{r analysis-results, dependson=c("simulation-parameters"), echo=FALSE}
+```{r analysis-results, dependson=c("simulation-parameters"), echo=FALSE, cache=TRUE}
+# Number of replications to perform:
+n_replications <- 100000
+# Sample sizes to explore at each replication:
+sample_sizes <- c(25, 50, 100)
+
 if (fs::file_exists("analysis_results.rds")) {
+  # Retrieve cached results:
   analysis_results <- readr::read_rds("analysis_results.rds")
 } else {
-  # Number of replications to perform:
-  n_replications <- 100000
-  # Sample sizes to explore at each replication:
-  sample_sizes <- c(25, 100, 250)
   analysis_results <- seq(1, n_replications) %>%
     future_map_dfr(
       function(replication) {
@@ -296,12 +326,13 @@ if (fs::file_exists("analysis_results.rds")) {
         return(analysis_result)
       },
       .id = "replication",
-      .progress = FALSE,
+      .progress = TRUE,
       .options = future_options(
         packages = c("tidyr", "dplyr", "broom"),
         seed = 42L
       )
     )
+  # Cache results:
   readr::write_rds(analysis_results, "analysis_results.rds", compress = "gz")
 }
 ```
@@ -310,7 +341,7 @@ set.seed(42L)
 # Number of replications to perform:
 n_replications <- 100000
 # Sample sizes to explore at each replication:
-sample_sizes <- c(25, 100, 250)
+sample_sizes <- c(25, 50, 100)
 analysis_results <- seq(1, n_replications) %>%
   map_dfr(
     function(replication) {
@@ -324,8 +355,8 @@ analysis_results <- seq(1, n_replications) %>%
     .id = "replication"
   )
 ```
-```{r analysis-results-f, cache=TRUE, dependson=c("analysis-results")}
-analysis_results_f <- analysis_results %>%
+```{r analysis-results-2, cache=TRUE, dependson=c("analysis-results")}
+analysis_results <- analysis_results %>%
   mutate(
     sample_size = as.integer(sample_size),
     scenario = factor(
@@ -341,6 +372,8 @@ analysis_results_f <- analysis_results %>%
   )
 ```
 
+# Results
+
 For each combination of scenario and sample size, we calculate the proportion of replications where the null hypothesis would be rejected (based on the p-value and significance level $\alpha = 0.05$). As a reminder, in case of the "control vs none" comparison, the null hypothesis (that the means/distributions are the same between the two groups) *is* true, so we would expect the proportion to equal $\alpha$ -- the probability of a false rejection.
 
 <aside>
@@ -348,7 +381,7 @@ The following table summarizing those results is created with the [`{gt}`](https
 </aside>
 
 ```{r, layout="l-body-outset"}
-analysis_results_f %>%
+analysis_results %>%
   group_by(scenario, statistical_test_f, sample_size, comparison) %>%
   summarize(reject = mean(p.value <= 0.05), .groups = "drop") %>%
   pivot_wider(names_from = "comparison", values_from = "reject") %>%
@@ -376,23 +409,18 @@ analysis_results_f %>%
   )
 ```
 
-```{r, layout="l-body-outset", fig.width=9, fig.height=9}
-analysis_results_f %>%
+```{r, layout="l-body-outset", fig.width=6, fig.height=3, eval=FALSE}
+analysis_results %>%
   mutate(
-    sample_size = factor(sample_size, sample_sizes, paste("N =", sample_sizes)),
-    comparison = factor(comparison, paste("control vs", c("none", "small", "medium", "large")))
+    sample_size_f = factor(sample_size, sample_sizes, paste("N =", sample_sizes)),
+    comparison_f = factor(comparison, paste("control vs", c("none", "small", "medium", "large")))
   ) %>%
-  split(., .$statistical_test_f) %>%
-  imap(function(analysis_result, test) {
-    ggplot(analysis_result, aes(x = statistic, y = comparison, fill = sample_size)) +
-      stat_halfeye() +
-      facet_wrap( ~ scenario, nrow = 1) +
-      labs(title = test, y = NULL, x = "Test statistic", fill = "Sample size") +
-      guides(fill = guide_legend(nrow = 1)) +
-      theme(legend.position = "bottom")
-  }) %>%
-  wrap_plots(ncol = 1) +
-  plot_annotation(title = "Distributions of test statistics")
+  filter(statistical_test == "t_test") %>%
+  ggplot(aes(x = statistic, y = comparison_f)) +
+  stat_halfeye() +
+  facet_wrap( ~ sample_size_f, nrow = 1, scales = "free_x") +
+  labs(title = "Distributions of t-test statistics", y = NULL, x = "Test statistic") +
+  theme(legend.position = "bottom")
 ```
 
 # Acknowledgements {.appendix}

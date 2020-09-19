@@ -41,3 +41,4 @@ vignettes/*.pdf
 # Repo-specific
 context-cards.js
 *_files/
+*.rds
