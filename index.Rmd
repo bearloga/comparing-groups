@@ -8,10 +8,10 @@ author:
     url: https://mpopov.com/
     affiliation: Wikimedia Foundation
     affiliation_url: https://wikimediafoundation.org/
-date: 2020-09-18
+date: 2020-09-21
 bibliography: bibliography.bib
 repository_url: https://github.com/bearloga/comparing-groups
-citation_url: https://bearloga.github.io/comparing-groups
+citation_url: https://people.wikimedia.org/~bearloga/notes/comparing-groups/
 slug: popov2020comparing
 creative_commons: CC BY-SA
 output:
@@ -19,9 +19,9 @@ output:
     toc: true
     toc_depth: 2
     df_print: kable
-nocite: | 
-  @dalgaard2008introductory, @degroot2012probability, @casella2002statistical,
-  @Rpkg-stats
+nocite: |
+  @Rpkg-stats, @Rpkg-glue, @Rpkg-purrr, @Rpkg-furrr, @Rpkg-tidyr, @Rpkg-dplyr,
+  @Rpkg-ggplot2, @Rpkg-distributional, @Rpkg-ggdist, @Rpkg-patchwork, @Rpkg-gt
 ---
 ```{r setup, include=FALSE}
 library(knitr)
@@ -65,6 +65,12 @@ suppressPackageStartupMessages({
 theme_set(theme_ggdist())
 ```
 
+# Key Takeaways
+
+- t-test is OK to perform for non-normal data and has the same false positive rate across different distributions, including skewed ones
+- t-test has the greatest power of the bunch, with the small effect detected more often than when the other two tests were used with the same dataset
+- with a per-group sample size of 100+, all three tests offer the same conclusion, so when working with larger samples just use a t-test because it's easier to interpret/communicate and to perform (computationally speaking)
+
 **NOTE**: Only some of the code has been included on this page. The full code (including chunks responsible for creating tables and charts) can be found in [the R Markdown source document](https://github.com/bearloga/comparing-groups/blob/main/index.Rmd).
 
 # Introduction
@@ -74,16 +80,30 @@ The two most difficult problems in statistics are:
 - $p \gg N$ (when the number of dimensions greatly exceeds the sample size)
 - the question "Can I use a <a href="https://en.wikipedia.org/wiki/Student's_t-test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Student's t-test">t-test</a> here?"
 
-This article is not about high dimensionality. It is about an issue that is, perhaps, more divisive in the statistical world than "frequentist statistics vs Bayesian statistics" -- when a t-test is or is not appropriate to use. Specifically, there are two schools of thought:
+There is a wealth of literature on methods and best practices for dealing with high dimensionality, but there is not a lot of consistency when it comes to knowing when a t-test is appropriate and recommending its use in practical settings. There are two schools of thought:
 
 - there are those who assert that the data needs to be normally-distributed and a non-parametric test should be employed otherwise
 - there are those who assert that the distributional assumptions of a t-test apply to the test statistic only; so the test can be employed even with skewed data
 
-[@pananos2020nothing]
+Pananos [-@pananos2020nothing] started his blog post with:
 
-<a href="https://en.wikipedia.org/wiki/Mann%E2%80%93Whitney_U_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Mann–Whitney U test">Wilcoxon-Mann-Whitney test</a>
+> I hate the objection “I can’t use the t-test, my data aren’t normal”. I see it all the time on Cross Validated when a data analyst is tasked with analyzing an experiment after it has been performed. They have piles of data, thousands of observations, and they have no idea what to do with it. They know of the t-test, but they erroneously believe (through no fault of their own) that the t-test is only valid if their data are normal.
 
-<a href="https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Kolmogorov–Smirnov test">Kolmogorov-Smirnov test</a>
+Honestly, it wasn't until I read that post that I questioned my own belief that I've been taught. It's easy to see how one might be led to believe this -- to be indoctrinated into that first school of thought.
+
+> The *t* tests are based on an assumption that data come from the normal distribution
+
+writes Dalgaard [-@dalgaard2008introductory].
+
+> We shall suppose that the variables $X_1, \ldots, X_n$ form a random sample from a normal distribution
+
+write DeGroot & Schervish [-@degroot2012probability].
+
+> Let $X_1, \ldots, X_n$ be a random sample from a $n(\mu_X, \sigma^2_X)$...
+
+write Casella & Berger [-@casella2002statistical].
+
+These notes are an extension of Pananos' post on Cross Validated [-@434921]. Here I examine how the data generating process (in this case the distribution from which the observations are drawn) and the choice of statistical test (t-test and its non-parametric alternatives <a href="https://en.wikipedia.org/wiki/Mann%E2%80%93Whitney_U_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Mann–Whitney U test">Wilcoxon-Mann-Whitney test</a> and <a href="https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Kolmogorov–Smirnov test">Kolmogorov-Smirnov test</a>) affect the results. The four scenarios (distributions) are:
 
 ```{r}
 tibble(
@@ -143,24 +163,7 @@ plot_distributions <- function(sim_params) {
 }
 ```
 
-The idea here is to specify different centers and shapes of the various distributions for every group, except the "none" group which we include for measuring <a href="https://en.wikipedia.org/wiki/Type_I_and_type_II_errors" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Type I and type II errors">type I</a> error (aka false positive rate (FPR), aka false rejection rate (FRR), aka $\alpha$): the probability of incorrectly rejecting the null hypothesis when the null hypothesis is true. The null hypothesis will be true for the "none" group because it has the exact same distribution as the "control" group. For example:
-
-```{r, layout="l-body-outset", fig.width=6, fig.height=3}
-tribble(~shape, ~rate, 2, 0.01) %>%
-  ggplot(aes(dist = dist_gamma(shape = shape, rate = rate))) +
-  stat_dist_halfeye(orientation = "horizontal") +
-  ggtitle("Probability density of Gamma(2, 0.01)")
-```
-```{r z, echo=TRUE}
-# https://twitter.com/PhDemetri/status/1305984009609060353
-set.seed(50201)
-z <- replicate(100000, {
-  x <- rgamma(50, 2, 0.01)
-  y <- rgamma(50, 2, 0.01)
-  t.test(x,y)$p.value <= 0.05
-})
-mean(z)
-```
+The idea here is to specify different centers and shapes of the various distributions for every group, except the "none" group which we include for measuring <a href="https://en.wikipedia.org/wiki/Type_I_and_type_II_errors" class='wiki-preview' data-wiki-lang='en' data-wiki-title="Type I and type II errors">type I</a> error (aka false positive rate (FPR), aka false rejection rate (FRR), aka $\alpha$): the probability of incorrectly rejecting the null hypothesis when the null hypothesis is true. The null hypothesis will be true for the "none" group because it has the exact same distribution as the "control" group.
 
 ```{r simulation-parameters, cache=TRUE, echo=TRUE}
 simulation_parameters <- list(
@@ -239,12 +242,12 @@ simulate_data <- function(N, sim_params) {
 ```
 
 ```{r example-data, cache=TRUE, echo=TRUE, dependson=c("simulation-parameters")}
-set.seed(20200918)
+set.seed(20200921)
 n_example_size <- 2000
 example_data <- simulate_data(N = n_example_size, sim_params = simulation_parameters)
 ```
 
-Here are the distributions of the data in the different scenarios from this one single simulated dataset of `r n_example_size` randomly generated observations:
+Here are the distributions of the data in the different scenarios from this one single simulated dataset of `r n_example_size` randomly generated observations **per group**:
 
 ```{r, layout="l-body-outset", fig.width=7, fig.height=5}
 example_data %>%
@@ -303,7 +306,7 @@ analyze_data <- function(simulated_data) {
 
 ## Putting it all together
 
-Now we want to simulate and analyze thousands of times and also across different sample sizes, to study the impact of sample sizes on robustness of those tests:
+Now we want to simulate and analyze thousands of times and also across different sample sizes (per group), to study the impact of sample sizes on robustness of those tests:
 
 ```{r analysis-results, dependson=c("simulation-parameters"), echo=FALSE, cache=TRUE}
 # Number of replications to perform:
@@ -380,11 +383,14 @@ For each combination of scenario and sample size, we calculate the proportion of
 The following table summarizing those results is created with the [`{gt}`](https://gt.rstudio.com/) package.
 </aside>
 
-```{r, layout="l-body-outset"}
-analysis_results %>%
+```{r rejection-rates, cache=TRUE, dependson=c('analysis-results-2')}
+rejection_rates <- analysis_results %>%
   group_by(scenario, statistical_test_f, sample_size, comparison) %>%
   summarize(reject = mean(p.value <= 0.05), .groups = "drop") %>%
-  pivot_wider(names_from = "comparison", values_from = "reject") %>%
+  pivot_wider(names_from = "comparison", values_from = "reject")
+```
+```{r, layout="l-body-outset"}
+rejection_rates %>%
   mutate(sample_size = paste0("N = ", sample_size)) %>%
   group_by(scenario, sample_size) %>%
   gt(row_group.sep = ", ") %>%
@@ -409,6 +415,54 @@ analysis_results %>%
   )
 ```
 
+```{r agreement-rates, cache=TRUE, dependson=c('analysis-results-2')}
+agreement_rates <- analysis_results %>%
+  mutate(reject = p.value <= 0.05) %>%
+  select(scenario, comparison, sample_size, replication, statistical_test, reject) %>%
+  pivot_wider(names_from = "statistical_test", values_from = "reject") %>%
+  mutate(
+    all_agreed = t_test & wilcox_test & ks_test,
+    tw_agreed = t_test & wilcox_test,
+    tks_agreed = t_test & ks_test,
+    wks_agreed = wilcox_test & ks_test
+  ) %>%
+  pivot_longer(
+    cols = ends_with("agreed"), names_pattern = "^([a-z]+)_agreed$",
+    names_to = "tests", values_to = "agreed"
+  ) %>%
+  group_by(scenario, sample_size, comparison, tests) %>%
+  summarize(agreement_rate = mean(agreed), .groups = "drop")
+```
+```{r, layout="l-body-outset"}
+agreement_rates %>%
+  mutate(
+    sample_size = paste0("N = ", sample_size),
+    tests = factor(tests, c("all", "tw", "tks", "wks"), c("All three", "t-test and Wilcox", "t-test and K-S", "Wilcox and K-S"))
+  ) %>%
+  pivot_wider(names_from = "comparison", values_from = "agreement_rate") %>%
+  group_by(scenario, sample_size) %>%
+  gt(row_group.sep = ", ") %>%
+  tab_header(
+    title = "Rate of agreement on rejecting or failing to reject",
+    subtitle = html("At &alpha;=0.05 significance level")
+  ) %>%
+  fmt_percent(columns = starts_with("control vs"), decimals = 1) %>%
+  cols_move(
+    columns = vars("control vs none", "control vs small", "control vs medium", "control vs large"),
+    after = vars("tests")
+  ) %>%
+  tab_style(
+    style = list(cell_text(weight = "bold")),
+    locations = cells_row_groups()
+  ) %>%
+  cols_align(align = "left", columns = vars("tests")) %>%
+  cols_label(tests = "Statistical tests") %>%
+  tab_style(
+    style = list(cell_text(indent = px(20))),
+    locations = cells_body(columns = vars("tests"))
+  )
+```
+
 ```{r, layout="l-body-outset", fig.width=6, fig.height=3, eval=FALSE}
 analysis_results %>%
   mutate(
@@ -422,6 +476,10 @@ analysis_results %>%
   labs(title = "Distributions of t-test statistics", y = NULL, x = "Test statistic") +
   theme(legend.position = "bottom")
 ```
+
+# Discussion
+
+Across all the non-normal scenarios (b, c, d) it looks like the t-test is okay to perform for non-normal data. Across all the scenarios, it has the same false positive rate (type I error) across different distributions, including skewed ones. The conclusions from the t-test and its most similar non-parametric alternative -- the Wilcoxon-Mann-Whitney test -- are in greatest agreement, relative to comparing conclusions from Kolmogorov-Smirnov Test. Almost consistently, t-test has the greatest power of the three across different sample sizes, with the small effect detected more often than when the other two tests were used with the same dataset. With a per-group sample size of $N=100$ or greater, all three tests offer the same conclusion -- so when working with larger samples just use a t-test because it's easier to interpret or communicate and to execute.
 
 # Acknowledgements {.appendix}
 
